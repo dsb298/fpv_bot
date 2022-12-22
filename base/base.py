@@ -1,3 +1,4 @@
+from queue import Queue
 import numpy as np
 import threading
 import socket
@@ -5,15 +6,12 @@ import cv2
 
 # address of your robot
 HOST = "192.168.1.162"
-PORT = 5433
+PORT = 5415
 
 def recv_frame(s):
     # Get jpeg frame size and convert from bytes
     sizeData = s.recv(2)
     frameSize = int.from_bytes(sizeData, byteorder='big')
-
-    # Let server know we received the size, and is now safe to send data
-    s.sendall(b'y')
 
     # Want to save read data directly to a preallocated space in memory. Allocate that space here
     frameData = np.empty([frameSize], dtype=np.uint8)
@@ -21,36 +19,55 @@ def recv_frame(s):
 
     # Get entire frame in order and put into preallocated space in memory
     while(cntr < frameSize):
-        dataChunk = np.frombuffer(s.recv(1024), dtype=np.uint8)
+        buffSize = frameSize - cntr
+        dataChunk = np.frombuffer(s.recv(buffSize), dtype=np.uint8)
         length = len(dataChunk)
-        try:
-            frameData[cntr:cntr+length] = dataChunk
-        except ValueError:
-            frameData[cntr:cntr+length-2] = dataChunk
+        frameData[cntr:cntr+length] = dataChunk
         cntr += length
 
     # Return readable Mat frame
     return cv2.imdecode(frameData, cv2.IMREAD_COLOR)
 
 
-def video_stream():
-
+def video_stream(command):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
-
+        prev_c = ''
         while(1):
             frame = recv_frame(s)
             cv2.imshow("window_name", frame)
-            c = cv2.waitKey(1)
-            if c == 27:
+
+            c = cv2.waitKey(10)
+            if c != prev_c:
+                command.put(c)
+            if c == 113:
                 cv2.destroyAllWindows()
-                return
+                break
+            prev_c = c
     return
 
+def controller(command):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.connect((HOST, PORT+1))
+
+        while(1):
+            val = command.get()
+            if(val != -1):
+                # com = bytes(str(val),'UTF-8')
+                com = int(val).to_bytes(1, byteorder='big')
+                sock.sendall(com)
+
 def main():
-    stream_thread = threading.Thread(target=video_stream)
+    command = Queue()
+
+    stream_thread = threading.Thread(target=video_stream, args=(command,))
+    control_thread = threading.Thread(target=controller, args=(command,))
+
     stream_thread.start()
+    control_thread.start()
+
     stream_thread.join()
+    control_thread.join()
 
 if __name__ == '__main__':
     main()
